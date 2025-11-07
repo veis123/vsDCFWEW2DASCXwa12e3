@@ -5,7 +5,7 @@ local player = Players.LocalPlayer
 local character = player.Character or player.CharacterAdded:Wait()
 local ragdol_function = false
 local RS = game.ReplicatedStorage
-
+local ragdollClone = nil 
 local RGD 
 
 local Window = Rayfield:CreateWindow({
@@ -143,18 +143,45 @@ local ragdollclient
 local UnRagdol = Tab2:CreateToggle({
    Name = "UnRagdol",
    CurrentValue = false,
-   Flag = "Toggle1", -- A flag is the identifier for the configuration file, make sure every element has a different flag if you're using configuration saving to ensure no overlaps
+   Flag = "Toggle1",
    Callback = function(Value)
-     if Value then
-	 if ragdollclient == nil then
-	    ragdollclient = character:FindFirstChild("Local Ragdoll"):Clone()
-	end
+      -- Получаем персонажа и проверяем, существует ли он
+      local character = localPlayer.Character
+      if not character then
+         warn("Персонаж не найден!")
+         return 
+      end
 
-character:FindFirstChild("Local Ragdoll"):Destroy()	 
+      if Value then -- Если переключатель ВКЛЮЧЕН (UnRagdol)
+         local ragdollInstance = character:FindFirstChild("Local Ragdoll")
 
-	 else 
-	    ragdollclient = character
-	 end
+         if ragdollInstance then
+            -- Сохраняем клон, только если мы еще не сделали этого
+            if ragdollClone == nil then
+               ragdollClone = ragdollInstance:Clone()
+            end
+            
+            -- Уничтожаем оригинальный объект рэгдолла в персонаже
+            ragdollInstance:Destroy()
+            print("Ragdoll отключен.")
+         else
+            print("Объект 'Local Ragdoll' не найден в персонаже.")
+         end
+
+      else -- Если переключатель ВЫКЛЮЧЕН (снова включить Ragdol)
+         -- Проверяем, есть ли у нас сохраненный клон
+         if ragdollClone then
+            -- Проверяем, нет ли уже рэгдолла в персонаже, чтобы не создавать дубликаты
+            if not character:FindFirstChild("Local Ragdoll") then
+               -- Создаем новую копию из нашего сохраненного клона и добавляем ее в персонажа
+               local newRagdoll = ragdollClone:Clone()
+               newRagdoll.Parent = character
+               print("Ragdoll восстановлен.")
+            end
+         else
+            warn("Не удалось восстановить Ragdoll: клон не был сохранен.")
+         end
+      end
    end,
 })
 
