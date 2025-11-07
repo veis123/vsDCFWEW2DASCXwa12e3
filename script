@@ -94,7 +94,11 @@ local Input = Tab2:CreateInput({
    Flag = "Input1",
    Callback = function(Text)
       if Text == nil then return end
-      RS.PlayerAppearanceEvent:FireServer(Text)
+      if Text == type(number) then     
+        RS.PlayerAppearanceEvent:FireServer(Text)
+      else
+        local id = Players:GetUserIdFromNameAsync(Text)
+        RS.PlayerAppearanceEvent:FireServer(id)
 
    -- The function that takes place when the input is changed
    -- The variable (Text) is a string for the value in the text box
