@@ -1,3 +1,4 @@
+
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Players = game:GetService("Players")
 local player = Players.LocalPlayer
@@ -49,18 +50,6 @@ local Tab1 = Window:CreateTab("General", 4483362458)
 local Tab2 = Window:CreateTab("Ragdoll", 4483362458) 
 local Tab3 = Window:CreateTab("Tools", 4483362458) 
 
-local localscriptdev
-
-local consoledis = Tab2:CreateToggle({
-   Name = "ConsoleView",
-   CurrentValue = false,
-   Flag = "Toggle1", -- A flag is the identifier for the configuration file, make sure every element has a different flag if you're using configuration saving to ensure no overlaps
-   Callback = function(Value)
-	   player.PlayerScripts:FindFirstChild("LocalScript").Enabled = value
-   end,
-})
-
-
 local DexButton = Tab1:CreateButton({
    Name = "Dex",
    Callback = function()
@@ -71,7 +60,7 @@ local DexButton = Tab1:CreateButton({
 local jerkoff = Tab3:CreateButton({
    Name = "Jerf Off",
    Callback = function()
-      if character.Humanoid.RigType == Enum.HumanoidRigType.R15 then
+      if workspace[character.Name].Humanoid.RigType == Enum.HumanoidRigType.R15 then
           loadstring(game:HttpGet("https://pastefy.app/YZoglOyJ/raw"))() -- r15
       else
          loadstring(game:HttpGet("https://pastefy.app/wa3v2Vgm/raw"))() -- r6
@@ -93,14 +82,13 @@ local Input = Tab2:CreateInput({
    RemoveTextAfterFocusLost = false,
    Flag = "Input1",
    Callback = function(Text)
-      if Text == nil then return end
-      if Type(Text) == "number" then
+      if type(Text) == "number" then
         RS.PlayerAppearanceEvent:FireServer(Text)
-      elseif Type(Text) == "string" then
+      elseif type(Text) == "string" then
         local id = Players:GetUserIdFromNameAsync(Text)
         RS.PlayerAppearanceEvent:FireServer(id)
       else
-         warn(Type(Text)
+         warn(type(Text))
       end
 
    -- The function that takes place when the input is changed
@@ -108,29 +96,33 @@ local Input = Tab2:CreateInput({
    end
 })
 
+local ragdollvalue
+local ragdollclient
+
 local UnRagdol = Tab2:CreateToggle({
    Name = "UnRagdol",
    CurrentValue = false,
    Flag = "Toggle1", -- A flag is the identifier for the configuration file, make sure every element has a different flag if you're using configuration saving to ensure no overlaps
    Callback = function(Value)
      if Value then
-	    local localRagdoll = character:FindFirstChild("Local Ragdoll")
-		  if localRagdoll then
-		    ragdol_function = true
-            localRagdoll:Destroy()
-		   end
+	 if ragdollclient == nil then
+	    ragdollclient = character:FindFirstChild("Local Ragdoll"):Clone()
+	end
+
+character:FindFirstChild("Local Ragdoll"):Destroy()	 
 
 	 else 
-	    ragdol_function = false
+	    ragdollclient = character
 	 end
    end,
 })
 
+player.PlayerScripts:FindFirstChild("LocalScript").Enabled = false
 
-player.CharacterAdded:Connect(function(character)
+--[[player.CharacterAdded:Connect(function(character)
     wait(0.1) 
     local localRagdoll = character:FindFirstChild("Local Ragdoll")
     if localRagdoll then
         localRagdoll:Destroy()
     end
-end)
+end)]]--
