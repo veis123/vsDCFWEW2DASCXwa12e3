@@ -82,17 +82,58 @@ local Input = Tab2:CreateInput({
    RemoveTextAfterFocusLost = false,
    Flag = "Input1",
    Callback = function(Text)
-      if type(Text) == "number" then
-        RS.PlayerAppearanceEvent:FireServer(Text)
-      elseif type(Text) == "string" then
-        local id = Players:GetUserIdFromNameAsync(Text)
-        RS.PlayerAppearanceEvent:FireServer(id)
+      -- Убираем лишние пробелы в начале и конце
+      Text = Text:gsub("^%s*", ""):gsub("%s*$", "")
+      if Text == "" then return end -- Если строка пустая, ничего не делаем
+
+      local targetUserId
+      
+      -- Проверяем, является ли введенный текст числом (ID игрока)
+      local isUserId = tonumber(Text)
+
+      if isUserId then
+         -- Если да, используем его напрямую
+         targetUserId = isUserId
       else
-         warn(type(Text))
+         -- Если нет, считаем, что это имя игрока, и получаем его ID
+         -- Используем pcall для безопасной обработки ошибок (например, если игрок не найден)
+         local success, result = pcall(function()
+            return Players:GetUserIdFromNameAsync(Text)
+         end)
+
+         if success and result then
+            targetUserId = result
+         else
+            warn("Не удалось найти игрока с именем: " .. Text)
+            return -- Прерываем выполнение, если ID не получен
+         end
+      end
+      
+      -- --- Логика смены аватара и сохранения позиции ---
+      
+      local localPlayer = Players.LocalPlayer
+      local character = localPlayer.Character
+      
+      -- Проверяем, существует ли персонаж, прежде чем сохранять позицию
+      if not character or not character.PrimaryPart then
+         warn("Текущий персонаж не найден.")
+         return
       end
 
-   -- The function that takes place when the input is changed
-   -- The variable (Text) is a string for the value in the text box
+      -- 1. Сохраняем текущую позицию
+      local currentCFrame = character.PrimaryPart.CFrame
+
+      -- 2. Отправляем событие на сервер для смены аватара
+      RS.PlayerAppearanceEvent:FireServer(targetUserId)
+
+      -- 3. Ждем, пока появится НОВЫЙ персонаж после перезагрузки
+      local newCharacter = localPlayer.CharacterAdded:Wait()
+      
+      -- 4. Ждем, пока у нового персонажа появится HumanoidRootPart, чтобы избежать ошибок
+      newCharacter:WaitForChild("HumanoidRootPart")
+
+      -- 5. Устанавливаем сохраненную позицию для нового персонажа
+      newCharacter:SetPrimaryPartCFrame(currentCFrame)
    end
 })
 
