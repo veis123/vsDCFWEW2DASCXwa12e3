@@ -1,4 +1,3 @@
-
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Players = game:GetService("Players")
 local player = Players.LocalPlayer
@@ -82,21 +81,13 @@ local Input = Tab2:CreateInput({
    RemoveTextAfterFocusLost = false,
    Flag = "Input1",
    Callback = function(Text)
-      -- Убираем лишние пробелы в начале и конце
       Text = Text:gsub("^%s*", ""):gsub("%s*$", "")
-      if Text == "" then return end -- Если строка пустая, ничего не делаем
-
+      if Text == "" then return end
       local targetUserId
-      
-      -- Проверяем, является ли введенный текст числом (ID игрока)
       local isUserId = tonumber(Text)
-
       if isUserId then
-         -- Если да, используем его напрямую
          targetUserId = isUserId
       else
-         -- Если нет, считаем, что это имя игрока, и получаем его ID
-         -- Используем pcall для безопасной обработки ошибок (например, если игрок не найден)
          local success, result = pcall(function()
             return Players:GetUserIdFromNameAsync(Text)
          end)
@@ -109,30 +100,19 @@ local Input = Tab2:CreateInput({
          end
       end
       
-      -- --- Логика смены аватара и сохранения позиции ---
       
       local localPlayer = Players.LocalPlayer
       local character = localPlayer.Character
       
-      -- Проверяем, существует ли персонаж, прежде чем сохранять позицию
       if not character or not character.PrimaryPart then
          warn("Текущий персонаж не найден.")
          return
       end
 
-      -- 1. Сохраняем текущую позицию
       local currentCFrame = character.PrimaryPart.CFrame
-
-      -- 2. Отправляем событие на сервер для смены аватара
       RS.PlayerAppearanceEvent:FireServer(targetUserId)
-
-      -- 3. Ждем, пока появится НОВЫЙ персонаж после перезагрузки
       local newCharacter = localPlayer.CharacterAdded:Wait()
-      
-      -- 4. Ждем, пока у нового персонажа появится HumanoidRootPart, чтобы избежать ошибок
       newCharacter:WaitForChild("HumanoidRootPart")
-
-      -- 5. Устанавливаем сохраненную позицию для нового персонажа
       newCharacter:SetPrimaryPartCFrame(currentCFrame)
    end
 })
@@ -145,8 +125,7 @@ local UnRagdol = Tab2:CreateToggle({
    CurrentValue = false,
    Flag = "Toggle1",
    Callback = function(Value)
-      -- Получаем персонажа и проверяем, существует ли он
-      local character = localPlayer.Character
+      local character = game.Players.LocalPlayer.Character
       if not character then
          warn("Персонаж не найден!")
          return 
@@ -156,7 +135,6 @@ local UnRagdol = Tab2:CreateToggle({
          local ragdollInstance = character:FindFirstChild("Local Ragdoll")
 
          if ragdollInstance then
-            -- Сохраняем клон, только если мы еще не сделали этого
             if ragdollClone == nil then
                ragdollClone = ragdollInstance:Clone()
             end
