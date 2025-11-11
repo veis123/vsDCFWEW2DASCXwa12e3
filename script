@@ -1,33 +1,823 @@
+-- ============================================================
+-- 🎮 NORTCH.GG - Ultimate Cooperation Script
+-- 👑 by Legion
+-- 🔥 Features: Group System, Cloud Storage, Full Customization
+-- ============================================================
+
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local HttpService = game:GetService("HttpService")
 local localPlayer = Players.LocalPlayer
 local mouse = localPlayer:GetMouse()
 
-local selectedPlayer = nil
-local ragdollClone = nil 
-local originalCameraSubject = nil
-local originalProperties = {}
-local savedSkins = {}
-local originalUserId = localPlayer.UserId
-local flying = false
-local flySpeed = 50
-local bodyVelocity, bodyGyro
+-- ============================================================
+-- 🔥 CLOUD STORAGE CONFIGURATION
+-- ============================================================
+
+local CloudStorage = {}
+CloudStorage.URL = "https://online-8654e-default-rtdb.firebaseio.com"
+local httpRequest = request or http_request or syn.request
+
+function CloudStorage:Set(path, data)
+    local response = httpRequest({
+        Url = self.URL .. "/" .. path .. ".json",
+        Method = "PUT",
+        Headers = {["Content-Type"] = "application/json"},
+        Body = HttpService:JSONEncode(data)
+    })
+    return response.StatusCode == 200
+end
+
+function CloudStorage:Get(path)
+    local success, result = pcall(function()
+        return HttpService:JSONDecode(game:HttpGet(self.URL .. "/" .. path .. ".json"))
+    end)
+    return success and result or nil
+end
+
+function CloudStorage:Update(path, data)
+    local response = httpRequest({
+        Url = self.URL .. "/" .. path .. ".json",
+        Method = "PATCH",
+        Headers = {["Content-Type"] = "application/json"},
+        Body = HttpService:JSONEncode(data)
+    })
+    return response.StatusCode == 200
+end
+
+function CloudStorage:Delete(path)
+    local response = httpRequest({
+        Url = self.URL .. "/" .. path .. ".json",
+        Method = "DELETE"
+    })
+    return response.StatusCode == 200
+end
+
+-- ============================================================
+-- 📊 USER DATA MANAGER
+-- ============================================================
+
+local UserData = {}
+UserData.userId = localPlayer.UserId
+UserData.userName = localPlayer.Name
+UserData.displayName = localPlayer.DisplayName
+UserData.accountAge = localPlayer.AccountAge
+UserData.savedSkins = {}
+UserData.settings = {
+    theme = "Amethyst",
+    notifications = true,
+    autoSave = true
+}
+
+function UserData:Load()
+    local data = CloudStorage:Get("users/" .. self.userId)
+    if data then
+        self.savedSkins = data.savedSkins or {}
+        self.settings = data.settings or self.settings
+        return true
+    else
+        self:Save()
+        return false
+    end
+end
+
+function UserData:Save()
+    CloudStorage:Set("users/" .. self.userId, {
+        userName = self.userName,
+        displayName = self.displayName,
+        accountAge = self.accountAge,
+        savedSkins = self.savedSkins,
+        settings = self.settings,
+        lastSeen = os.time(),
+        scriptVersion = "1.0.0"
+    })
+end
+
+function UserData:AddSkin(name, userId)
+    self.savedSkins[name] = userId
+    CloudStorage:Update("users/" .. self.userId .. "/savedSkins", {[name] = userId})
+end
+
+-- ============================================================
+-- 👥 GROUP MANAGER
+-- ============================================================
+
+local GroupManager = {}
+GroupManager.currentGroup = nil
+GroupManager.isLeader = false
+GroupManager.members = {}
+GroupManager.updateLoop = nil
+GroupManager.billboards = {}
+
+function GroupManager:GenerateGroupID()
+    return "GROUP_" .. math.random(100000, 999999)
+end
+
+function GroupManager:CreateGroup(password)
+    local groupID = self:GenerateGroupID()
+    
+    local groupData = {
+        leader = localPlayer.UserId,
+        leaderName = localPlayer.Name,
+        password = password or "null",
+        created = os.time(),
+        maxMembers = 10,
+        settings = {
+            syncTeleport = true,
+            syncSkins = false,
+            allowInvites = true
+        }
+    }
+    
+    CloudStorage:Set("groups/" .. groupID, groupData)
+    
+    local memberData = {
+        name = localPlayer.Name,
+        userId = localPlayer.UserId,
+        displayName = localPlayer.DisplayName,
+        placeId = game.PlaceId,
+        jobId = game.JobId,
+        position = {x = 0, y = 0, z = 0},
+        online = true,
+        joinedAt = os.time(),
+        lastUpdate = os.time()
+    }
+    
+    CloudStorage:Set("groups/" .. groupID .. "/members/" .. localPlayer.UserId, memberData)
+    CloudStorage:Set("users/" .. localPlayer.UserId .. "/currentGroup", groupID)
+    
+    self.currentGroup = groupID
+    self.isLeader = true
+    
+    self:StartUpdateLoop()
+    self:ListenForCommands()
+    self:UpdateBillboards()
+    
+    return groupID
+end
+
+function GroupManager:JoinGroup(groupID, password)
+    local groupData = CloudStorage:Get("groups/" .. groupID)
+    if not groupData then
+        return false, "Group not found!"
+    end
+    
+    if groupData.password ~= "null" and groupData.password ~= password then
+        return false, "Wrong password!"
+    end
+    
+    local members = CloudStorage:Get("groups/" .. groupID .. "/members") or {}
+    local count = 0
+    for _ in pairs(members) do count = count + 1 end
+    if count >= (groupData.maxMembers or 10) then
+        return false, "Group is full!"
+    end
+    
+    local memberData = {
+        name = localPlayer.Name,
+        userId = localPlayer.UserId,
+        displayName = localPlayer.DisplayName,
+        placeId = game.PlaceId,
+        jobId = game.JobId,
+        position = {x = 0, y = 0, z = 0},
+        online = true,
+        joinedAt = os.time(),
+        lastUpdate = os.time()
+    }
+    
+    CloudStorage:Set("groups/" .. groupID .. "/members/" .. localPlayer.UserId, memberData)
+    CloudStorage:Set("users/" .. localPlayer.UserId .. "/currentGroup", groupID)
+    
+    self.currentGroup = groupID
+    self.isLeader = (groupData.leader == localPlayer.UserId)
+    
+    self:StartUpdateLoop()
+    self:ListenForCommands()
+    self:UpdateBillboards()
+    
+    return true, "Joined successfully!"
+end
+
+function GroupManager:LeaveGroup()
+    if not self.currentGroup then return end
+    
+    CloudStorage:Delete("groups/" .. self.currentGroup .. "/members/" .. localPlayer.UserId)
+    CloudStorage:Delete("users/" .. localPlayer.UserId .. "/currentGroup")
+    
+    if self.updateLoop then
+        self.updateLoop:Disconnect()
+        self.updateLoop = nil
+    end
+    
+    self:ClearBillboards()
+    
+    self.currentGroup = nil
+    self.isLeader = false
+    self.members = {}
+end
+
+function GroupManager:UpdatePosition()
+    if not self.currentGroup then return end
+    
+    local character = localPlayer.Character
+    if not character or not character:FindFirstChild("HumanoidRootPart") then return end
+    
+    local pos = character.HumanoidRootPart.Position
+    local posData = {
+        x = math.floor(pos.X),
+        y = math.floor(pos.Y),
+        z = math.floor(pos.Z)
+    }
+    
+    CloudStorage:Update("groups/" .. self.currentGroup .. "/members/" .. localPlayer.UserId, {
+        position = posData,
+        placeId = game.PlaceId,
+        jobId = game.JobId,
+        lastUpdate = os.time(),
+        online = true
+    })
+end
+
+function GroupManager:GetMembers()
+    if not self.currentGroup then return {} end
+    local members = CloudStorage:Get("groups/" .. self.currentGroup .. "/members")
+    return members or {}
+end
+
+function GroupManager:StartUpdateLoop()
+    if self.updateLoop then
+        self.updateLoop:Disconnect()
+    end
+    
+    local lastUpdate = 0
+    self.updateLoop = RunService.Heartbeat:Connect(function()
+        if tick() - lastUpdate >= 2 then
+            lastUpdate = tick()
+            self:UpdatePosition()
+            self.members = self:GetMembers()
+            self:UpdateBillboards()
+        end
+    end)
+end
+
+function GroupManager:CreateBillboard(player, memberData)
+    if player == localPlayer then return end
+    
+    local character = player.Character
+    if not character then return end
+    
+    local head = character:FindFirstChild("Head")
+    if not head then return end
+    
+    -- Удаляем старый billboard если есть
+    local oldBillboard = head:FindFirstChild("GroupBillboard")
+    if oldBillboard then
+        oldBillboard:Destroy()
+    end
+    
+    local billboard = Instance.new("BillboardGui")
+    billboard.Name = "GroupBillboard"
+    billboard.Adornee = head
+    billboard.Size = UDim2.new(0, 200, 0, 50)
+    billboard.StudsOffset = Vector3.new(0, 3, 0)
+    billboard.AlwaysOnTop = true
+    
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1, 0, 1, 0)
+    frame.BackgroundColor3 = Color3.fromRGB(138, 43, 226)
+    frame.BackgroundTransparency = 0.3
+    frame.BorderSizePixel = 0
+    frame.Parent = billboard
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 8)
+    corner.Parent = frame
+    
+    local nameLabel = Instance.new("TextLabel")
+    nameLabel.Size = UDim2.new(1, 0, 0.6, 0)
+    nameLabel.Position = UDim2.new(0, 0, 0, 0)
+    nameLabel.BackgroundTransparency = 1
+    nameLabel.Text = "👥 " .. memberData.displayName
+    nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    nameLabel.TextScaled = true
+    nameLabel.Font = Enum.Font.GothamBold
+    nameLabel.Parent = frame
+    
+    local statusLabel = Instance.new("TextLabel")
+    statusLabel.Size = UDim2.new(1, 0, 0.4, 0)
+    statusLabel.Position = UDim2.new(0, 0, 0.6, 0)
+    statusLabel.BackgroundTransparency = 1
+    statusLabel.Text = "🟢 Group Member"
+    statusLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
+    statusLabel.TextScaled = true
+    statusLabel.Font = Enum.Font.Gotham
+    statusLabel.Parent = frame
+    
+    billboard.Parent = head
+    
+    return billboard
+end
+
+function GroupManager:UpdateBillboards()
+    if not self.currentGroup then return end
+    
+    -- Очищаем старые billboards
+    for userId, billboard in pairs(self.billboards) do
+        if billboard and billboard.Parent then
+            billboard:Destroy()
+        end
+    end
+    self.billboards = {}
+    
+    -- Создаем новые billboards для участников в этом же сервере
+    for userId, memberData in pairs(self.members) do
+        if memberData.placeId == game.PlaceId and memberData.jobId == game.JobId then
+            local player = Players:GetPlayerByUserId(tonumber(userId))
+            if player and player ~= localPlayer then
+                local billboard = self:CreateBillboard(player, memberData)
+                if billboard then
+                    self.billboards[userId] = billboard
+                end
+            end
+        end
+    end
+end
+
+function GroupManager:ClearBillboards()
+    for userId, billboard in pairs(self.billboards) do
+        if billboard and billboard.Parent then
+            billboard:Destroy()
+        end
+    end
+    self.billboards = {}
+end
+
+function GroupManager:TeleportToMember(memberUserId)
+    local member = self.members[tostring(memberUserId)]
+    if not member or not member.position then return false end
+    
+    -- Проверяем что участник в том же сервере
+    if member.placeId ~= game.PlaceId or member.jobId ~= game.JobId then
+        return false, "Member is in different server!"
+    end
+    
+    local character = localPlayer.Character
+    if not character or not character:FindFirstChild("HumanoidRootPart") then return false end
+    
+    character.HumanoidRootPart.CFrame = CFrame.new(
+        member.position.x,
+        member.position.y,
+        member.position.z
+    )
+    
+    return true
+end
+
+function GroupManager:TeleportAllToMe()
+    if not self.isLeader then return false, "Only leader can do this!" end
+    
+    local character = localPlayer.Character
+    if not character or not character:FindFirstChild("HumanoidRootPart") then return false end
+    
+    local pos = character.HumanoidRootPart.Position
+    
+    CloudStorage:Set("groups/" .. self.currentGroup .. "/commands/teleportAll", {
+        x = math.floor(pos.X),
+        y = math.floor(pos.Y),
+        z = math.floor(pos.Z),
+        timestamp = os.time()
+    })
+    
+    return true
+end
+
+function GroupManager:ListenForCommands()
+    spawn(function()
+        local lastCommand = 0
+        while self.currentGroup do
+            wait(1)
+            
+            local cmd = CloudStorage:Get("groups/" .. self.currentGroup .. "/commands/teleportAll")
+            if cmd and cmd.timestamp > lastCommand then
+                lastCommand = cmd.timestamp
+                
+                local character = localPlayer.Character
+                if character and character:FindFirstChild("HumanoidRootPart") then
+                    character.HumanoidRootPart.CFrame = CFrame.new(cmd.x, cmd.y, cmd.z)
+                    
+                    Rayfield:Notify({
+                       Title = "👑 Leader Command",
+                       Content = "Teleported by leader!",
+                       Duration = 2,
+                       Image = "zap",
+                    })
+                end
+            end
+        end
+    end)
+end
+
+-- ============================================================
+-- 💬 CHAT MANAGER
+-- ============================================================
+
+local ChatManager = {}
+
+function ChatManager:SendMessage(groupID, message)
+    local msgID = "msg_" .. os.time() .. "_" .. math.random(1000, 9999)
+    
+    local msgData = {
+        from = localPlayer.Name,
+        userId = localPlayer.UserId,
+        text = message,
+        timestamp = os.time()
+    }
+    
+    CloudStorage:Set("chat/" .. groupID .. "/" .. msgID, msgData)
+end
+
+function ChatManager:GetMessages(groupID, limit)
+    limit = limit or 50
+    local messages = CloudStorage:Get("chat/" .. groupID)
+    
+    if not messages then return {} end
+    
+    local msgArray = {}
+    for id, msg in pairs(messages) do
+        msg.id = id
+        table.insert(msgArray, msg)
+    end
+    
+    table.sort(msgArray, function(a, b)
+        return a.timestamp < b.timestamp
+    end)
+    
+    local result = {}
+    local start = math.max(1, #msgArray - limit + 1)
+    for i = start, #msgArray do
+        table.insert(result, msgArray[i])
+    end
+    
+    return result
+end
+
+-- ============================================================
+-- 📍 WAYPOINT MANAGER
+-- ============================================================
+
+local WaypointManager = {}
+
+function WaypointManager:SaveWaypoint(groupID, name, description)
+    local character = localPlayer.Character
+    if not character or not character:FindFirstChild("HumanoidRootPart") then return false end
+    
+    local pos = character.HumanoidRootPart.Position
+    
+    local waypointData = {
+        position = {
+            x = math.floor(pos.X),
+            y = math.floor(pos.Y),
+            z = math.floor(pos.Z)
+        },
+        createdBy = localPlayer.Name,
+        creatorId = localPlayer.UserId,
+        description = description or "",
+        timestamp = os.time(),
+        visits = 0
+    }
+    
+    CloudStorage:Set("waypoints/" .. groupID .. "/" .. name, waypointData)
+    return true
+end
+
+function WaypointManager:GetWaypoints(groupID)
+    return CloudStorage:Get("waypoints/" .. groupID) or {}
+end
+
+function WaypointManager:TeleportToWaypoint(groupID, name)
+    local waypoint = CloudStorage:Get("waypoints/" .. groupID .. "/" .. name)
+    if not waypoint or not waypoint.position then return false end
+    
+    local character = localPlayer.Character
+    if not character or not character:FindFirstChild("HumanoidRootPart") then return false end
+    
+    character.HumanoidRootPart.CFrame = CFrame.new(
+        waypoint.position.x,
+        waypoint.position.y,
+        waypoint.position.z
+    )
+    
+    CloudStorage:Update("waypoints/" .. groupID .. "/" .. name, {
+        visits = (waypoint.visits or 0) + 1
+    })
+    
+    return true
+end
+
+-- ============================================================
+-- 🎨 SHARED SKINS MANAGER
+-- ============================================================
+
+local SharedSkinsManager = {}
+
+function SharedSkinsManager:UploadSkin(groupID, skinName, userId, description)
+    local skinData = {
+        userId = userId,
+        uploadedBy = localPlayer.Name,
+        uploaderId = localPlayer.UserId,
+        description = description or "",
+        likes = 0,
+        downloads = 0,
+        timestamp = os.time()
+    }
+    
+    CloudStorage:Set("sharedSkins/" .. groupID .. "/" .. skinName, skinData)
+    return true
+end
+
+function SharedSkinsManager:GetSkins(groupID)
+    return CloudStorage:Get("sharedSkins/" .. groupID) or {}
+end
+
+-- ============================================================
+-- 🎮 CHARACTER CONTROLLER
+-- ============================================================
+
+local CharacterController = {}
+CharacterController.flying = false
+CharacterController.flySpeed = 50
+CharacterController.noclipEnabled = false
+CharacterController.noclipConnection = nil
+CharacterController.bodyVelocity = nil
+CharacterController.bodyGyro = nil
+
+function CharacterController:EnableFlight(speed)
+    self.flySpeed = speed or 50
+    self.flying = true
+    
+    local character = localPlayer.Character
+    if not character or not character:FindFirstChild("HumanoidRootPart") then return end
+    local hrp = character.HumanoidRootPart
+    
+    self.bodyVelocity = Instance.new("BodyVelocity")
+    self.bodyVelocity.Velocity = Vector3.new(0, 0, 0)
+    self.bodyVelocity.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+    self.bodyVelocity.Parent = hrp
+    
+    self.bodyGyro = Instance.new("BodyGyro")
+    self.bodyGyro.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+    self.bodyGyro.CFrame = hrp.CFrame
+    self.bodyGyro.Parent = hrp
+    
+    local humanoid = character:FindFirstChild("Humanoid")
+    if humanoid then
+        humanoid.PlatformStand = true
+    end
+    
+    spawn(function()
+        local camera = workspace.CurrentCamera
+        while self.flying do
+            local moveDirection = Vector3.new(0, 0, 0)
+            
+            if UserInputService:IsKeyDown(Enum.KeyCode.W) then
+                moveDirection = moveDirection + (camera.CFrame.LookVector * self.flySpeed)
+            end
+            if UserInputService:IsKeyDown(Enum.KeyCode.S) then
+                moveDirection = moveDirection - (camera.CFrame.LookVector * self.flySpeed)
+            end
+            if UserInputService:IsKeyDown(Enum.KeyCode.A) then
+                moveDirection = moveDirection - (camera.CFrame.RightVector * self.flySpeed)
+            end
+            if UserInputService:IsKeyDown(Enum.KeyCode.D) then
+                moveDirection = moveDirection + (camera.CFrame.RightVector * self.flySpeed)
+            end
+            if UserInputService:IsKeyDown(Enum.KeyCode.Space) then
+                moveDirection = moveDirection + Vector3.new(0, self.flySpeed, 0)
+            end
+            if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then
+                moveDirection = moveDirection - Vector3.new(0, self.flySpeed, 0)
+            end
+            
+            if self.bodyVelocity then
+                self.bodyVelocity.Velocity = moveDirection
+            end
+            if self.bodyGyro then
+                self.bodyGyro.CFrame = camera.CFrame
+            end
+            
+            wait()
+        end
+    end)
+end
+
+function CharacterController:DisableFlight()
+    self.flying = false
+    
+    if self.bodyVelocity then
+        self.bodyVelocity:Destroy()
+        self.bodyVelocity = nil
+    end
+    if self.bodyGyro then
+        self.bodyGyro:Destroy()
+        self.bodyGyro = nil
+    end
+    
+    local character = localPlayer.Character
+    if character then
+        local humanoid = character:FindFirstChild("Humanoid")
+        if humanoid then
+            humanoid.PlatformStand = false
+        end
+    end
+end
+
+function CharacterController:EnableNoclip()
+    self.noclipEnabled = true
+    local character = localPlayer.Character
+    if not character then return end
+    
+    if self.noclipConnection then
+        self.noclipConnection:Disconnect()
+    end
+    
+    self.noclipConnection = RunService.Stepped:Connect(function()
+        if character and self.noclipEnabled then
+            for _, part in pairs(character:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = false
+                end
+            end
+        end
+    end)
+end
+
+function CharacterController:DisableNoclip()
+    self.noclipEnabled = false
+    
+    if self.noclipConnection then
+        self.noclipConnection:Disconnect()
+        self.noclipConnection = nil
+    end
+    
+    local character = localPlayer.Character
+    if character then
+        for _, part in pairs(character:GetDescendants()) do
+            if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+                part.CanCollide = true
+            end
+        end
+    end
+end
+
+-- ============================================================
+-- 🎨 AVATAR MANAGER
+-- ============================================================
+
+local AvatarManager = {}
+AvatarManager.originalUserId = localPlayer.UserId
+AvatarManager.savedSkins = {}
+AvatarManager.unRagdollEnabled = false
+
+function AvatarManager:ApplyUnRagdoll(character)
+    if not self.unRagdollEnabled then return end
+    if not character then return end
+    
+    wait(0.5) -- Ждем загрузки персонажа
+    
+    local ragdollInstance = character:FindFirstChild("Local Ragdoll")
+    if ragdollInstance then
+        ragdollInstance:Destroy()
+        print("✅ UnRagdoll applied to new character")
+    end
+end
+
+function AvatarManager:ChangeSkin(userId, saveName)
+    local character = localPlayer.Character
+    if not character or not character.PrimaryPart then return false end
+    
+    local currentCFrame = character.PrimaryPart.CFrame
+    
+    local success = pcall(function()
+        ReplicatedStorage.PlayerAppearanceEvent:FireServer(userId)
+    end)
+    
+    if not success then return false end
+    
+    if saveName then
+        self.savedSkins[saveName] = userId
+        UserData:AddSkin(saveName, userId)
+    end
+    
+    spawn(function()
+        local newCharacter = localPlayer.CharacterAdded:Wait()
+        newCharacter:WaitForChild("HumanoidRootPart")
+        newCharacter:WaitForChild("Humanoid")
+        wait(0.3)
+        
+        -- Применяем UnRagdoll если включен
+        self:ApplyUnRagdoll(newCharacter)
+        
+        -- Возвращаем на позицию
+        if newCharacter:FindFirstChild("HumanoidRootPart") then
+            newCharacter.HumanoidRootPart.CFrame = currentCFrame
+        end
+    end)
+    
+    return true
+end
+
+function AvatarManager:ResetSkin()
+    return self:ChangeSkin(self.originalUserId)
+end
+
+-- ============================================================
+-- 🖱️ PLAYER SELECTOR
+-- ============================================================
+
+local PlayerSelector = {}
+PlayerSelector.selectedPlayer = nil
+PlayerSelector.originalCameraSubject = nil
+PlayerSelector.originalProperties = {}
+
+function PlayerSelector:SelectPlayer(player)
+    self.selectedPlayer = player
+end
+
+function PlayerSelector:SpectatePlayer(player)
+    if not player or not player.Character or not player.Character:FindFirstChild("Humanoid") then
+        return false
+    end
+    
+    self.originalCameraSubject = workspace.CurrentCamera.CameraSubject
+    workspace.CurrentCamera.CameraSubject = player.Character.Humanoid
+    
+    local character = localPlayer.Character
+    if character then
+        for _, part in ipairs(character:GetDescendants()) do
+            if part:IsA("BasePart") or part:IsA("Decal") then
+                if not self.originalProperties[part] then
+                    self.originalProperties[part] = {
+                        Transparency = part.Transparency,
+                        CanCollide = part.CanCollide
+                    }
+                end
+                part.Transparency = 1
+                if part:IsA("BasePart") then
+                    part.CanCollide = false
+                end
+            end
+        end
+    end
+    
+    return true
+end
+
+function PlayerSelector:StopSpectating()
+    if self.originalCameraSubject then
+        workspace.CurrentCamera.CameraSubject = self.originalCameraSubject
+    end
+    
+    local character = localPlayer.Character
+    if character then
+        for _, part in ipairs(character:GetDescendants()) do
+            if part:IsA("BasePart") or part:IsA("Decal") then
+                local props = self.originalProperties[part]
+                if props then
+                    part.Transparency = props.Transparency
+                    if part:IsA("BasePart") then
+                        part.CanCollide = props.CanCollide
+                    end
+                end
+            end
+        end
+    end
+    
+    self.originalProperties = {}
+end
+
+-- ============================================================
+-- 🎨 GUI CREATION
+-- ============================================================
+
+UserData:Load()
 
 local Window = Rayfield:CreateWindow({
-   Name = "NORTCH.GG",
-   Icon = 0,
-   LoadingTitle = "NORTCH.GG",
-   LoadingSubtitle = "by Legion",
+   Name = "🎮 NORTCH.GG",
+   Icon = "crown",
+   LoadingTitle = "NORTCH.GG Loading...",
+   LoadingSubtitle = "by Legion | Cloud Sync Enabled",
    ShowText = "Rayfield",
-   Theme = "Default",
+   Theme = "Amethyst",
    ToggleUIKeybind = "K",
    DisableRayfieldPrompts = false,
    DisableBuildWarnings = false,
    ConfigurationSaving = {
       Enabled = true,
       FolderName = nil,
-      FileName = "Big Hub"
+      FileName = "NORTCH_Hub"
    },
    Discord = {
       Enabled = false,
@@ -35,137 +825,1096 @@ local Window = Rayfield:CreateWindow({
       RememberJoins = true
    },
    KeySystem = false,
-   KeySettings = {
-      Title = "Untitled",
-      Subtitle = "Key System",
-      Note = "No method of obtaining the key is provided",
-      FileName = "Key",
-      SaveKey = true,
-      GrabKeyFromSite = false,
-      Key = {"Hello"}
-   }
 })
 
-local Tab1 = Window:CreateTab("General", 4483362458)
-local Tab2 = Window:CreateTab("Ragdoll", 4483362458) 
-local Tab4 = Window:CreateTab("Players", 4483362458)
-local Tab3 = Window:CreateTab("Tools", 4483362458)
+-- ============================================================
+-- 📑 TABS
+-- ============================================================
 
-local DexButton = Tab1:CreateButton({
-   Name = "Dex",
+local HomeTab = Window:CreateTab("Home", "home")
+local GeneralTab = Window:CreateTab("General", "settings")
+local AvatarTab = Window:CreateTab("Avatar", "user")
+local PlayersTab = Window:CreateTab("Players", "users")
+local GroupTab = Window:CreateTab("Group", "users-2")
+local GroupFeaturesTab = Window:CreateTab("Group Features", "share-2")
+local AnimationsTab = Window:CreateTab("Animations", "activity")
+local UtilitiesTab = Window:CreateTab("Utilities", "package")
+
+-- ============================================================
+-- 🏠 HOME TAB
+-- ============================================================
+
+local HomeSection = HomeTab:CreateSection("👋 Welcome!")
+
+local WelcomeParagraph = HomeTab:CreateParagraph({
+   Title = "🎮 NORTCH.GG", 
+   Content = "Welcome, " .. localPlayer.DisplayName .. "! Your data is automatically saved. Join or create a group to play with friends!"
+})
+
+HomeTab:CreateDivider()
+
+local StatsSection = HomeTab:CreateSection("📊 Your Statistics")
+
+local UserIDLabel = HomeTab:CreateLabel("User ID: " .. localPlayer.UserId, "fingerprint", Color3.fromRGB(100, 200, 255), false)
+local UsernameLabel = HomeTab:CreateLabel("Username: @" .. localPlayer.Name, "at-sign", Color3.fromRGB(150, 150, 255), false)
+local AccountAgeLabel = HomeTab:CreateLabel("Account Age: " .. localPlayer.AccountAge .. " days", "calendar", Color3.fromRGB(255, 200, 100), false)
+
+local SavedSkinsCount = 0
+for _ in pairs(UserData.savedSkins) do SavedSkinsCount = SavedSkinsCount + 1 end
+local SavedSkinsLabel = HomeTab:CreateLabel("Saved Skins: " .. SavedSkinsCount, "image", Color3.fromRGB(255, 150, 255), false)
+
+HomeTab:CreateDivider()
+
+local QuickActionsSection = HomeTab:CreateSection("⚡ Quick Actions")
+
+local QuickSaveButton = HomeTab:CreateButton({
+   Name = "💾 Save All Data to Cloud",
    Callback = function()
-     pcall(function()
-         loadstring(game:HttpGet('https://raw.githubusercontent.com/MassiveHubs/loadstring/refs/heads/main/DexXenoAndRezware'))()
-     end)
+      UserData:Save()
+      Rayfield:Notify({
+         Title = "💾 Saved",
+         Content = "All your data has been saved!",
+         Duration = 2,
+         Image = "save",
+      })
    end,
 })
 
-local Infity = Tab1:CreateButton({
-   Name = "Infinite Yield",
+local RefreshDataButton = HomeTab:CreateButton({
+   Name = "🔄 Refresh Data from Cloud",
    Callback = function()
-     pcall(function()
-         loadstring(game:HttpGet('https://raw.githubusercontent.com/EdgeIY/infiniteyield/master/source'))()
-     end)
+      UserData:Load()
+      Rayfield:Notify({
+         Title = "🔄 Refreshed",
+         Content = "Data reloaded successfully!",
+         Duration = 2,
+         Image = "refresh-cw",
+      })
    end,
 })
 
-local InvisToggle = Tab1:CreateToggle({
-   Name = "Invisible",
+-- ============================================================
+-- ⚙️ GENERAL TAB
+-- ============================================================
+
+local CharacterSection = GeneralTab:CreateSection("🎭 Character Settings")
+
+local NoclipToggle = GeneralTab:CreateToggle({
+   Name = "🚪 Noclip",
    CurrentValue = false,
-   Flag = "InvisToggle",
+   Flag = "NoclipToggle",
    Callback = function(Value)
-       local character = localPlayer.Character
-       if not character then return end
-       
-       for _, part in ipairs(character:GetDescendants()) do
-           if part:IsA("BasePart") then
-               part.Transparency = Value and 1 or (part.Name == "HumanoidRootPart" and 1 or 0)
-           elseif part:IsA("Decal") then
-               part.Transparency = Value and 1 or 0
-           end
+       if Value then
+           CharacterController:EnableNoclip()
+           Rayfield:Notify({
+              Title = "🚪 Noclip Enabled",
+              Content = "You can now walk through walls!",
+              Duration = 2,
+              Image = "door-open",
+           })
+       else
+           CharacterController:DisableNoclip()
+           Rayfield:Notify({
+              Title = "🚪 Noclip Disabled",
+              Content = "Collision restored!",
+              Duration = 2,
+              Image = "door-closed",
+           })
        end
    end,
 })
 
-local FlyToggle = Tab1:CreateToggle({
-   Name = "Fly",
+GeneralTab:CreateDivider()
+
+local FlightSection = GeneralTab:CreateSection("✈️ Flight System")
+
+local FlightSpeedLabel = GeneralTab:CreateLabel("Flight Speed: 50", "gauge", Color3.fromRGB(100, 200, 255), false)
+
+local FlySpeedSlider = GeneralTab:CreateSlider({
+   Name = "🚀 Flight Speed",
+   Range = {10, 200},
+   Increment = 5,
+   Suffix = " speed",
+   CurrentValue = 50,
+   Flag = "FlySpeed",
+   Callback = function(Value)
+      CharacterController.flySpeed = Value
+      FlightSpeedLabel:Set("Flight Speed: " .. Value, "gauge", Color3.fromRGB(100, 200, 255), false)
+   end,
+})
+
+local FlyToggle = GeneralTab:CreateToggle({
+   Name = "✈️ Enable Flight",
    CurrentValue = false,
    Flag = "FlyToggle",
    Callback = function(Value)
-       flying = Value
-       local character = localPlayer.Character
-       if not character or not character:FindFirstChild("HumanoidRootPart") then return end
-       local humanoidRootPart = character.HumanoidRootPart
-       
-       if flying then
-           bodyVelocity = Instance.new("BodyVelocity")
-           bodyVelocity.Velocity = Vector3.new(0, 0, 0)
-           bodyVelocity.MaxForce = Vector3.new(9e9, 9e9, 9e9)
-           bodyVelocity.Parent = humanoidRootPart
-           
-           bodyGyro = Instance.new("BodyGyro")
-           bodyGyro.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
-           bodyGyro.CFrame = humanoidRootPart.CFrame
-           bodyGyro.Parent = humanoidRootPart
-           
-           local humanoid = character:FindFirstChild("Humanoid")
-           if humanoid then
-               humanoid.PlatformStand = true
-           end
-           
-           spawn(function()
-               local camera = workspace.CurrentCamera
-               while flying do
-                   local moveDirection = Vector3.new(0, 0, 0)
-                   
-                   if game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.W) then
-                       moveDirection = moveDirection + (camera.CFrame.LookVector * flySpeed)
-                   end
-                   if game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.S) then
-                       moveDirection = moveDirection - (camera.CFrame.LookVector * flySpeed)
-                   end
-                   if game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.A) then
-                       moveDirection = moveDirection - (camera.CFrame.RightVector * flySpeed)
-                   end
-                   if game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.D) then
-                       moveDirection = moveDirection + (camera.CFrame.RightVector * flySpeed)
-                   end
-                   if game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.Space) then
-                       moveDirection = moveDirection + Vector3.new(0, flySpeed, 0)
-                   end
-                   if game:GetService("UserInputService"):IsKeyDown(Enum.KeyCode.LeftShift) then
-                       moveDirection = moveDirection - Vector3.new(0, flySpeed, 0)
-                   end
-                   
-                   if bodyVelocity then
-                       bodyVelocity.Velocity = moveDirection
-                   end
-                   if bodyGyro then
-                       bodyGyro.CFrame = camera.CFrame
-                   end
-                   
-                   wait()
-               end
-           end)
+       if Value then
+           CharacterController:EnableFlight(CharacterController.flySpeed)
+           Rayfield:Notify({
+              Title = "✈️ Flight Enabled",
+              Content = "Use WASD to fly, Space/Shift for up/down",
+              Duration = 4,
+              Image = "plane",
+           })
        else
-           if bodyVelocity then
-               bodyVelocity:Destroy()
-               bodyVelocity = nil
-           end
-           if bodyGyro then
-               bodyGyro:Destroy()
-               bodyGyro = nil
-           end
-           local humanoid = character:FindFirstChild("Humanoid")
-           if humanoid then
-               humanoid.PlatformStand = false
-           end
+           CharacterController:DisableFlight()
+           Rayfield:Notify({
+              Title = "✈️ Flight Disabled",
+              Content = "Flight mode turned off",
+              Duration = 2,
+              Image = "plane-landing",
+           })
        end
    end,
 })
 
-local jerkoff = Tab3:CreateButton({
-   Name = "Jerf Off",
+GeneralTab:CreateDivider()
+
+local MovementSection = GeneralTab:CreateSection("🏃 Movement Settings")
+
+local WalkSpeedSlider = GeneralTab:CreateSlider({
+   Name = "🏃 Walk Speed",
+   Range = {16, 200},
+   Increment = 2,
+   Suffix = " speed",
+   CurrentValue = 16,
+   Flag = "WalkSpeed",
+   Callback = function(Value)
+      local character = localPlayer.Character
+      if character and character:FindFirstChild("Humanoid") then
+          character.Humanoid.WalkSpeed = Value
+      end
+   end,
+})
+
+local JumpPowerSlider = GeneralTab:CreateSlider({
+   Name = "🦘 Jump Power",
+   Range = {50, 300},
+   Increment = 5,
+   Suffix = " power",
+   CurrentValue = 50,
+   Flag = "JumpPower",
+   Callback = function(Value)
+      local character = localPlayer.Character
+      if character and character:FindFirstChild("Humanoid") then
+          character.Humanoid.JumpPower = Value
+      end
+   end,
+})
+
+local InfiniteJumpToggle = GeneralTab:CreateToggle({
+   Name = "♾️ Infinite Jump",
+   CurrentValue = false,
+   Flag = "InfiniteJump",
+   Callback = function(Value)
+       local InfiniteJumpEnabled = Value
+       UserInputService.JumpRequest:Connect(function()
+           if InfiniteJumpEnabled then
+               local character = localPlayer.Character
+               if character and character:FindFirstChild("Humanoid") then
+                   character.Humanoid:ChangeState("Jumping")
+               end
+           end
+       end)
+   end,
+})
+
+-- ============================================================
+-- 👤 AVATAR TAB
+-- ============================================================
+
+local AvatarChangeSection = AvatarTab:CreateSection("🎨 Change Avatar")
+
+local AvatarInput = AvatarTab:CreateInput({
+   Name = "🆔 Enter Player ID or Username",
+   CurrentValue = "",
+   PlaceholderText = "Player ID or Username",
+   RemoveTextAfterFocusLost = false,
+   Flag = "AvatarInput",
+   Callback = function(Text)
+      Text = Text:gsub("^%s*", ""):gsub("%s*$", "")
+      if Text == "" then return end
+
+      local targetUserId
+      local targetName
+      local isUserId = tonumber(Text)
+
+      if isUserId then
+         targetUserId = isUserId
+         local success, name = pcall(function()
+            return Players:GetNameFromUserIdAsync(targetUserId)
+         end)
+         targetName = success and name or ("User_" .. targetUserId)
+      else
+         targetName = Text
+         local success, result = pcall(function()
+            return Players:GetUserIdFromNameAsync(Text)
+         end)
+         if success and result then
+            targetUserId = result
+         else
+            Rayfield:Notify({
+               Title = "❌ Error",
+               Content = "Player not found!",
+               Duration = 3,
+               Image = "user-x",
+            })
+            return
+         end
+      end
+      
+      local success = AvatarManager:ChangeSkin(targetUserId, targetName)
+      
+      if success then
+         Rayfield:Notify({
+            Title = "✅ Avatar Changed",
+            Content = "Changed to " .. targetName .. " and saved!",
+            Duration = 3,
+            Image = "user-check",
+         })
+      else
+         Rayfield:Notify({
+            Title = "❌ Error",
+            Content = "Failed to change avatar!",
+            Duration = 3,
+            Image = "x-circle",
+         })
+      end
+   end
+})
+
+AvatarTab:CreateDivider()
+
+local SavedSkinsSection = AvatarTab:CreateSection("💾 Saved Skins")
+
+local function updateSkinList()
+    local skinList = {}
+    for name, _ in pairs(UserData.savedSkins) do
+        table.insert(skinList, name)
+    end
+    return skinList
+end
+
+local SkinDropdown = AvatarTab:CreateDropdown({
+   Name = "Select Saved Skin",
+   Options = updateSkinList(),
+   CurrentOption = {},
+   MultipleOptions = false,
+   Flag = "SkinDropdown",
+   Callback = function(Options)
+      local selectedSkinName = Options[1]
+      if selectedSkinName and UserData.savedSkins[selectedSkinName] then
+         local targetUserId = UserData.savedSkins[selectedSkinName]
+         
+         AvatarManager:ChangeSkin(targetUserId)
+         
+         Rayfield:Notify({
+            Title = "💾 Skin Loaded",
+            Content = "Applied: " .. selectedSkinName,
+            Duration = 2,
+            Image = "user",
+         })
+      end
+   end,
+})
+
+local RefreshSkinsButton = AvatarTab:CreateButton({
+   Name = "🔄 Refresh Saved Skins",
+   Callback = function()
+      UserData:Load()
+      SkinDropdown:Refresh(updateSkinList())
+      
+      local count = 0
+      for _ in pairs(UserData.savedSkins) do count = count + 1 end
+      
+      Rayfield:Notify({
+         Title = "🔄 Refreshed",
+         Content = count .. " skins loaded",
+         Duration = 2,
+         Image = "refresh-cw",
+      })
+   end,
+})
+
+local ResetSkinButton = AvatarTab:CreateButton({
+   Name = "🔄 Reset to Original Skin",
+   Callback = function()
+      AvatarManager:ResetSkin()
+      
+      Rayfield:Notify({
+         Title = "🔄 Skin Reset",
+         Content = "Restored original avatar!",
+         Duration = 2,
+         Image = "refresh-cw",
+      })
+   end,
+})
+
+AvatarTab:CreateDivider()
+
+local RagdollSection = AvatarTab:CreateSection("🤸 Ragdoll Settings")
+
+local UnRagdollToggle = AvatarTab:CreateToggle({
+   Name = "🚫 Disable Ragdoll (Auto-Apply)",
+   CurrentValue = false,
+   Flag = "UnRagdoll",
+   Callback = function(Value)
+      AvatarManager.unRagdollEnabled = Value
+      
+      local character = localPlayer.Character
+      if not character then return end
+
+      if Value then
+         local ragdollInstance = character:FindFirstChild("Local Ragdoll")
+         if ragdollInstance then
+            ragdollInstance:Destroy()
+            
+            Rayfield:Notify({
+               Title = "🚫 Ragdoll Disabled",
+               Content = "Will auto-apply to new skins!",
+               Duration = 2,
+               Image = "shield",
+            })
+         end
+      else
+         Rayfield:Notify({
+            Title = "✅ Ragdoll Enabled",
+            Content = "Ragdoll physics restored!",
+            Duration = 2,
+            Image = "shield-off",
+         })
+      end
+   end,
+})
+
+-- ============================================================
+-- 👥 PLAYERS TAB
+-- ============================================================
+
+local PlayerSelectionSection = PlayersTab:CreateSection("👥 Player Selection")
+
+local PlayerSelectionParagraph = PlayersTab:CreateParagraph({
+   Title = "ℹ️ How to select", 
+   Content = "Click on any player in the game to select them. Then use the buttons below."
+})
+
+local SelectedPlayerLabel = PlayersTab:CreateLabel("Selected: None", "user", Color3.fromRGB(255, 100, 100), false)
+
+PlayersTab:CreateDivider()
+
+local PlayerActionsSection = PlayersTab:CreateSection("🎯 Player Actions")
+
+local GotoPlayerButton = PlayersTab:CreateButton({
+   Name = "🚀 Teleport to Player",
+   Callback = function()
+       if not PlayerSelector.selectedPlayer then 
+          Rayfield:Notify({
+             Title = "⚠️ Warning",
+             Content = "No player selected!",
+             Duration = 3,
+             Image = "alert-triangle",
+          })
+          return 
+       end
+       
+       local localCharacter = localPlayer.Character
+       local targetCharacter = PlayerSelector.selectedPlayer.Character
+       
+       if localCharacter and localCharacter:FindFirstChild("HumanoidRootPart") and 
+          targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart") then
+           localCharacter.HumanoidRootPart.CFrame = targetCharacter.HumanoidRootPart.CFrame
+           
+           Rayfield:Notify({
+              Title = "🚀 Teleported",
+              Content = "Teleported to " .. PlayerSelector.selectedPlayer.Name,
+              Duration = 2,
+              Image = "navigation",
+           })
+       end
+   end,
+})
+
+local SpectateToggle = PlayersTab:CreateToggle({
+   Name = "👁️ Spectate Player",
+   CurrentValue = false,
+   Flag = "SpectateToggle",
+   Callback = function(Value)
+       if Value then
+           if not PlayerSelector.selectedPlayer then
+               Rayfield:Notify({
+                  Title = "❌ Error",
+                  Content = "No player selected!",
+                  Duration = 3,
+                  Image = "x-circle",
+               })
+               return
+           end
+           
+           local success = PlayerSelector:SpectatePlayer(PlayerSelector.selectedPlayer)
+           
+           if success then
+               Rayfield:Notify({
+                  Title = "👁️ Spectating",
+                  Content = "Now spectating " .. PlayerSelector.selectedPlayer.Name,
+                  Duration = 2,
+                  Image = "eye",
+               })
+           else
+               Rayfield:Notify({
+                  Title = "❌ Error",
+                  Content = "Cannot spectate this player!",
+                  Duration = 3,
+                  Image = "x-circle",
+               })
+           end
+       else
+           PlayerSelector:StopSpectating()
+           
+           Rayfield:Notify({
+              Title = "👁️ Stopped Spectating",
+              Content = "Returned to normal view",
+              Duration = 2,
+              Image = "eye-off",
+           })
+       end
+   end,
+})
+
+local CopySkinButton = PlayersTab:CreateButton({
+   Name = "🎨 Copy Player Skin",
+   Callback = function()
+       if not PlayerSelector.selectedPlayer then
+          Rayfield:Notify({
+             Title = "⚠️ Warning",
+             Content = "No player selected!",
+             Duration = 3,
+             Image = "alert-triangle",
+          })
+          return
+       end
+       
+       local targetUserId = PlayerSelector.selectedPlayer.UserId
+       local targetName = PlayerSelector.selectedPlayer.Name
+       
+       local success = AvatarManager:ChangeSkin(targetUserId, targetName)
+       
+       if success then
+           SkinDropdown:Refresh(updateSkinList())
+           
+           Rayfield:Notify({
+              Title = "🎨 Skin Copied",
+              Content = "Copied and saved " .. targetName .. "'s skin!",
+              Duration = 3,
+              Image = "copy",
+           })
+       end
+   end,
+})
+
+-- ============================================================
+-- 👥 GROUP TAB
+-- ============================================================
+
+local GroupStatusSection = GroupTab:CreateSection("📊 Group Status")
+
+local GroupStatusLabel = GroupTab:CreateLabel("Status: Not in group", "info", Color3.fromRGB(255, 100, 100), false)
+local GroupIDLabel = GroupTab:CreateLabel("Group ID: None", "key", Color3.fromRGB(150, 150, 150), false)
+local LeaderLabel = GroupTab:CreateLabel("Leader: None", "crown", Color3.fromRGB(150, 150, 150), false)
+
+GroupTab:CreateDivider()
+
+local CreateGroupSection = GroupTab:CreateSection("🆕 Create New Group")
+
+local CreateGroupParagraph = GroupTab:CreateParagraph({
+   Title = "ℹ️ Create Group", 
+   Content = "Create a new group to play with friends. Share the Group ID with them!"
+})
+
+local CreatePasswordInput = GroupTab:CreateInput({
+   Name = "🔒 Password (Optional)",
+   CurrentValue = "",
+   PlaceholderText = "Leave empty for no password",
+   RemoveTextAfterFocusLost = false,
+   Callback = function(Text) end,
+})
+
+local CreateGroupButton = GroupTab:CreateButton({
+   Name = "🎉 Create Group",
+   Callback = function()
+      local password = CreatePasswordInput.CurrentValue
+      if password == "" then password = nil end
+      
+      local groupID = GroupManager:CreateGroup(password)
+      
+      GroupStatusLabel:Set("Status: Connected (Leader)", "check-circle", Color3.fromRGB(100, 255, 100), false)
+      GroupIDLabel:Set("Group ID: " .. groupID, "key", Color3.fromRGB(100, 200, 255), false)
+      LeaderLabel:Set("Leader: You", "crown", Color3.fromRGB(255, 215, 0), false)
+      
+      Rayfield:Notify({
+         Title = "🎉 Group Created!",
+         Content = "Group ID copied! Share with friends",
+         Duration = 5,
+         Image = "check-circle",
+      })
+      
+      setclipboard(groupID)
+   end,
+})
+
+GroupTab:CreateDivider()
+
+local JoinGroupSection = GroupTab:CreateSection("🚪 Join Existing Group")
+
+local JoinGroupParagraph = GroupTab:CreateParagraph({
+   Title = "ℹ️ Join Group", 
+   Content = "Enter the Group ID that your friend shared to join their group. Members in same server will have markers!"
+})
+
+local JoinGroupIDInput = GroupTab:CreateInput({
+   Name = "🔑 Group ID",
+   CurrentValue = "",
+   PlaceholderText = "GROUP_123456",
+   RemoveTextAfterFocusLost = false,
+   Callback = function(Text) end,
+})
+
+local JoinPasswordInput = GroupTab:CreateInput({
+   Name = "🔒 Password (if required)",
+   CurrentValue = "",
+   PlaceholderText = "Enter password",
+   RemoveTextAfterFocusLost = false,
+   Callback = function(Text) end,
+})
+
+local JoinGroupButton = GroupTab:CreateButton({
+   Name = "🚪 Join Group",
+   Callback = function()
+      local groupID = JoinGroupIDInput.CurrentValue
+      local password = JoinPasswordInput.CurrentValue
+      
+      if groupID == "" then
+         Rayfield:Notify({
+            Title = "⚠️ Error",
+            Content = "Please enter a Group ID!",
+            Duration = 3,
+            Image = "alert-triangle",
+         })
+         return
+      end
+      
+      local success, msg = GroupManager:JoinGroup(groupID, password)
+      
+      if success then
+         local groupData = CloudStorage:Get("groups/" .. groupID)
+         local leaderName = groupData and groupData.leaderName or "Unknown"
+         
+         GroupStatusLabel:Set("Status: Connected", "check-circle", Color3.fromRGB(100, 255, 100), false)
+         GroupIDLabel:Set("Group ID: " .. groupID, "key", Color3.fromRGB(100, 200, 255), false)
+         LeaderLabel:Set("Leader: " .. leaderName, "crown", Color3.fromRGB(255, 215, 0), false)
+         
+         Rayfield:Notify({
+            Title = "✅ Joined Group!",
+            Content = "Markers will appear above group members!",
+            Duration = 3,
+            Image = "check-circle",
+         })
+      else
+         Rayfield:Notify({
+            Title = "❌ Failed to Join",
+            Content = msg,
+            Duration = 3,
+            Image = "x-circle",
+         })
+      end
+   end,
+})
+
+GroupTab:CreateDivider()
+
+local ManageGroupSection = GroupTab:CreateSection("⚙️ Manage Group")
+
+local LeaveGroupButton = GroupTab:CreateButton({
+   Name = "🚶 Leave Group",
+   Callback = function()
+      if not GroupManager.currentGroup then
+         Rayfield:Notify({
+            Title = "⚠️ Not in group",
+            Content = "You are not in any group!",
+            Duration = 2,
+            Image = "alert-triangle",
+         })
+         return
+      end
+      
+      GroupManager:LeaveGroup()
+      
+      GroupStatusLabel:Set("Status: Not in group", "info", Color3.fromRGB(255, 100, 100), false)
+      GroupIDLabel:Set("Group ID: None", "key", Color3.fromRGB(150, 150, 150), false)
+      LeaderLabel:Set("Leader: None", "crown", Color3.fromRGB(150, 150, 150), false)
+      
+      Rayfield:Notify({
+         Title = "👋 Left Group",
+         Content = "You left the group",
+         Duration = 2,
+         Image = "log-out",
+      })
+   end,
+})
+
+local CopyGroupIDButton = GroupTab:CreateButton({
+   Name = "📋 Copy Group ID",
+   Callback = function()
+      if not GroupManager.currentGroup then
+         Rayfield:Notify({
+            Title = "⚠️ Not in group",
+            Content = "You are not in any group!",
+            Duration = 2,
+            Image = "alert-triangle",
+         })
+         return
+      end
+      
+      setclipboard(GroupManager.currentGroup)
+      
+      Rayfield:Notify({
+         Title = "📋 Copied!",
+         Content = "Group ID copied to clipboard",
+         Duration = 2,
+         Image = "clipboard",
+      })
+   end,
+})
+
+-- ============================================================
+-- 🌟 GROUP FEATURES TAB
+-- ============================================================
+
+local MembersSection = GroupFeaturesTab:CreateSection("👥 Group Members")
+
+local MembersParagraph = GroupFeaturesTab:CreateParagraph({
+   Title = "ℹ️ Group Markers", 
+   Content = "Members in the same server will have purple markers above their heads!"
+})
+
+local MembersCountLabel = GroupFeaturesTab:CreateLabel("Members: 0", "users", Color3.fromRGB(150, 150, 255), false)
+local SameServerLabel = GroupFeaturesTab:CreateLabel("In this server: 0", "server", Color3.fromRGB(100, 255, 100), false)
+
+local RefreshMembersButton = GroupFeaturesTab:CreateButton({
+   Name = "🔄 Refresh Members",
+   Callback = function()
+      if not GroupManager.currentGroup then
+         Rayfield:Notify({
+            Title = "⚠️ Not in group",
+            Content = "Join a group first!",
+            Duration = 2,
+            Image = "alert-triangle",
+         })
+         return
+      end
+      
+      GroupManager.members = GroupManager:GetMembers()
+      local count = 0
+      local sameServerCount = 0
+      
+      for userId, memberData in pairs(GroupManager.members) do
+         count = count + 1
+         if memberData.placeId == game.PlaceId and memberData.jobId == game.JobId then
+            sameServerCount = sameServerCount + 1
+         end
+      end
+      
+      MembersCountLabel:Set("Members: " .. count, "users", Color3.fromRGB(150, 150, 255), false)
+      SameServerLabel:Set("In this server: " .. sameServerCount, "server", Color3.fromRGB(100, 255, 100), false)
+      
+      GroupManager:UpdateBillboards()
+      
+      Rayfield:Notify({
+         Title = "🔄 Refreshed",
+         Content = sameServerCount .. " members in this server",
+         Duration = 2,
+         Image = "users",
+      })
+   end,
+})
+
+GroupFeaturesTab:CreateDivider()
+
+local TeleportSection = GroupFeaturesTab:CreateSection("🚀 Teleport")
+
+local MemberDropdown = GroupFeaturesTab:CreateDropdown({
+   Name = "Select Member (Same Server)",
+   Options = {},
+   CurrentOption = {},
+   MultipleOptions = false,
+   Callback = function(Options) end,
+})
+
+local TeleportToMemberButton = GroupFeaturesTab:CreateButton({
+   Name = "🚀 Teleport to Member",
+   Callback = function()
+      if not GroupManager.currentGroup then return end
+      
+      local selectedName = MemberDropdown.CurrentOption[1]
+      if not selectedName then
+         Rayfield:Notify({
+            Title = "⚠️ No selection",
+            Content = "Select a member first!",
+            Duration = 2,
+            Image = "alert-triangle",
+         })
+         return
+      end
+      
+      for userId, member in pairs(GroupManager.members) do
+         if member.name == selectedName then
+            local success, msg = GroupManager:TeleportToMember(userId)
+            
+            if success then
+                Rayfield:Notify({
+                   Title = "🚀 Teleported",
+                   Content = "Teleported to " .. selectedName,
+                   Duration = 2,
+                   Image = "navigation",
+                })
+            else
+                Rayfield:Notify({
+                   Title = "❌ Error",
+                   Content = msg or "Member not in this server!",
+                   Duration = 3,
+                   Image = "x-circle",
+                })
+            end
+            break
+         end
+      end
+   end,
+})
+
+local TeleportAllButton = GroupFeaturesTab:CreateButton({
+   Name = "👑 Teleport All to Me (Leader)",
+   Callback = function()
+      if not GroupManager.currentGroup then return end
+      
+      local success, msg = GroupManager:TeleportAllToMe()
+      
+      if success then
+         Rayfield:Notify({
+            Title = "👑 Command Sent!",
+            Content = "Teleporting all members!",
+            Duration = 3,
+            Image = "users",
+         })
+      else
+         Rayfield:Notify({
+            Title = "❌ Failed",
+            Content = msg or "Only leader can use this!",
+            Duration = 3,
+            Image = "x-circle",
+         })
+      end
+   end,
+})
+
+GroupFeaturesTab:CreateDivider()
+
+local ChatSection = GroupFeaturesTab:CreateSection("💬 Group Chat")
+
+local ChatInput = GroupFeaturesTab:CreateInput({
+   Name = "💬 Message",
+   CurrentValue = "",
+   PlaceholderText = "Type your message...",
+   RemoveTextAfterFocusLost = true,
+   Callback = function(Text)
+      if Text ~= "" and GroupManager.currentGroup then
+         ChatManager:SendMessage(GroupManager.currentGroup, Text)
+         
+         Rayfield:Notify({
+            Title = "📤 Sent",
+            Content = "Message sent!",
+            Duration = 1,
+            Image = "send",
+         })
+      end
+   end,
+})
+
+local RefreshChatButton = GroupFeaturesTab:CreateButton({
+   Name = "🔄 Refresh Chat (Last 10)",
+   Callback = function()
+      if not GroupManager.currentGroup then return end
+      
+      local messages = ChatManager:GetMessages(GroupManager.currentGroup, 10)
+      
+      print("\n=== GROUP CHAT ===")
+      for _, msg in ipairs(messages) do
+         print("[" .. os.date("%H:%M:%S", msg.timestamp) .. "] " .. msg.from .. ": " .. msg.text)
+      end
+      print("==================\n")
+      
+      Rayfield:Notify({
+         Title = "💬 Chat Refreshed",
+         Content = "Check console (F9)",
+         Duration = 2,
+         Image = "message-circle",
+      })
+   end,
+})
+
+GroupFeaturesTab:CreateDivider()
+
+local WaypointsSection = GroupFeaturesTab:CreateSection("📍 Waypoints")
+
+local WaypointNameInput = GroupFeaturesTab:CreateInput({
+   Name = "📝 Waypoint Name",
+   CurrentValue = "",
+   PlaceholderText = "Enter name",
+   RemoveTextAfterFocusLost = false,
+   Callback = function(Text) end,
+})
+
+local WaypointDescInput = GroupFeaturesTab:CreateInput({
+   Name = "📄 Description",
+   CurrentValue = "",
+   PlaceholderText = "Optional",
+   RemoveTextAfterFocusLost = false,
+   Callback = function(Text) end,
+})
+
+local SaveWaypointButton = GroupFeaturesTab:CreateButton({
+   Name = "💾 Save Current Position",
+   Callback = function()
+      if not GroupManager.currentGroup then return end
+      
+      local name = WaypointNameInput.CurrentValue
+      local desc = WaypointDescInput.CurrentValue
+      
+      if name == "" then
+         Rayfield:Notify({
+            Title = "⚠️ No name",
+            Content = "Enter a waypoint name!",
+            Duration = 2,
+            Image = "alert-triangle",
+         })
+         return
+      end
+      
+      WaypointManager:SaveWaypoint(GroupManager.currentGroup, name, desc)
+      
+      Rayfield:Notify({
+         Title = "💾 Waypoint Saved!",
+         Content = "Saved: " .. name,
+         Duration = 2,
+         Image = "map-pin",
+      })
+   end,
+})
+
+local WaypointDropdown = GroupFeaturesTab:CreateDropdown({
+   Name = "Select Waypoint",
+   Options = {},
+   CurrentOption = {},
+   MultipleOptions = false,
+   Callback = function(Options) end,
+})
+
+local TeleportToWaypointButton = GroupFeaturesTab:CreateButton({
+   Name = "🚀 Teleport to Waypoint",
+   Callback = function()
+      if not GroupManager.currentGroup then return end
+      
+      local selectedWaypoint = WaypointDropdown.CurrentOption[1]
+      if not selectedWaypoint then return end
+      
+      WaypointManager:TeleportToWaypoint(GroupManager.currentGroup, selectedWaypoint)
+      
+      Rayfield:Notify({
+         Title = "🚀 Teleported!",
+         Content = "Teleported to " .. selectedWaypoint,
+         Duration = 2,
+         Image = "map-pin",
+      })
+   end,
+})
+
+local RefreshWaypointsButton = GroupFeaturesTab:CreateButton({
+   Name = "🔄 Refresh Waypoints",
+   Callback = function()
+      if not GroupManager.currentGroup then return end
+      
+      local waypoints = WaypointManager:GetWaypoints(GroupManager.currentGroup)
+      local waypointNames = {}
+      
+      for name, _ in pairs(waypoints) do
+         table.insert(waypointNames, name)
+      end
+      
+      WaypointDropdown:Refresh(waypointNames)
+      
+      Rayfield:Notify({
+         Title = "🔄 Refreshed",
+         Content = #waypointNames .. " waypoints found",
+         Duration = 2,
+         Image = "map-pin",
+      })
+   end,
+})
+
+GroupFeaturesTab:CreateDivider()
+
+local SharedSkinsSection = GroupFeaturesTab:CreateSection("🎨 Shared Skins")
+
+local UploadSkinNameInput = GroupFeaturesTab:CreateInput({
+   Name = "📝 Skin Name",
+   CurrentValue = "",
+   PlaceholderText = "Enter name",
+   RemoveTextAfterFocusLost = false,
+   Callback = function(Text) end,
+})
+
+local UploadSkinIDInput = GroupFeaturesTab:CreateInput({
+   Name = "🆔 User ID",
+   CurrentValue = "",
+   PlaceholderText = "Enter User ID",
+   RemoveTextAfterFocusLost = false,
+   Callback = function(Text) end,
+})
+
+local UploadSkinButton = GroupFeaturesTab:CreateButton({
+   Name = "📤 Upload Skin to Group",
+   Callback = function()
+      if not GroupManager.currentGroup then return end
+      
+      local name = UploadSkinNameInput.CurrentValue
+      local userId = tonumber(UploadSkinIDInput.CurrentValue)
+      
+      if name == "" or not userId then
+         Rayfield:Notify({
+            Title = "⚠️ Invalid input",
+            Content = "Enter both name and User ID!",
+            Duration = 2,
+            Image = "alert-triangle",
+         })
+         return
+      end
+      
+      SharedSkinsManager:UploadSkin(GroupManager.currentGroup, name, userId, "")
+      
+      Rayfield:Notify({
+         Title = "📤 Skin Uploaded!",
+         Content = "Uploaded: " .. name,
+         Duration = 2,
+         Image = "upload",
+      })
+   end,
+})
+
+local SharedSkinDropdown = GroupFeaturesTab:CreateDropdown({
+   Name = "Select Shared Skin",
+   Options = {},
+   CurrentOption = {},
+   MultipleOptions = false,
+   Callback = function(Options) end,
+})
+
+local ApplySharedSkinButton = GroupFeaturesTab:CreateButton({
+   Name = "🎭 Apply Shared Skin",
+   Callback = function()
+      if not GroupManager.currentGroup then return end
+      
+      local selectedSkin = SharedSkinDropdown.CurrentOption[1]
+      if not selectedSkin then return end
+      
+      local skins = SharedSkinsManager:GetSkins(GroupManager.currentGroup)
+      local skin = skins[selectedSkin]
+      
+      if skin and skin.userId then
+         AvatarManager:ChangeSkin(skin.userId)
+         
+         Rayfield:Notify({
+            Title = "🎭 Skin Applied!",
+            Content = "Applied: " .. selectedSkin,
+            Duration = 2,
+            Image = "user",
+         })
+      end
+   end,
+})
+
+local RefreshSharedSkinsButton = GroupFeaturesTab:CreateButton({
+   Name = "🔄 Refresh Shared Skins",
+   Callback = function()
+      if not GroupManager.currentGroup then return end
+      
+      local skins = SharedSkinsManager:GetSkins(GroupManager.currentGroup)
+      local skinNames = {}
+      
+      for name, _ in pairs(skins) do
+         table.insert(skinNames, name)
+      end
+      
+      SharedSkinDropdown:Refresh(skinNames)
+      
+      Rayfield:Notify({
+         Title = "🔄 Refreshed",
+         Content = #skinNames .. " skins available",
+         Duration = 2,
+         Image = "image",
+      })
+   end,
+})
+
+-- Автообновление членов группы и дропдауна
+spawn(function()
+    while wait(3) do
+        if GroupManager.currentGroup then
+            local memberNames = {}
+            local count = 0
+            local sameServerCount = 0
+            
+            for userId, member in pairs(GroupManager.members) do
+                count = count + 1
+                -- Добавляем только участников из этого же сервера
+                if member.placeId == game.PlaceId and member.jobId == game.JobId then
+                    table.insert(memberNames, member.name)
+                    sameServerCount = sameServerCount + 1
+                end
+            end
+            
+            if #memberNames > 0 then
+                MemberDropdown:Refresh(memberNames)
+            end
+            
+            MembersCountLabel:Set("Members: " .. count, "users", Color3.fromRGB(150, 150, 255), false)
+            SameServerLabel:Set("In this server: " .. sameServerCount, "server", Color3.fromRGB(100, 255, 100), false)
+        end
+    end
+end)
+
+-- Автообновление чата
+spawn(function()
+    local lastCheck = 0
+    while wait(5) do
+        if GroupManager.currentGroup then
+            local messages = ChatManager:GetMessages(GroupManager.currentGroup, 1)
+            if #messages > 0 and messages[1].timestamp > lastCheck then
+                lastCheck = messages[1].timestamp
+                
+                if messages[1].userId ~= localPlayer.UserId then
+                    print("[NEW MESSAGE] " .. messages[1].from .. ": " .. messages[1].text)
+                end
+            end
+        end
+    end
+end)
+
+-- ============================================================
+-- 🎭 ANIMATIONS TAB
+-- ============================================================
+
+local AnimationsSection = AnimationsTab:CreateSection("🎭 FE Animations")
+
+local JerkOffButton = AnimationsTab:CreateButton({
+   Name = "🍆 Jerk Off Animation",
    Callback = function()
       local character = localPlayer.Character
       if not character then return end
@@ -176,211 +1925,86 @@ local jerkoff = Tab3:CreateButton({
           else
              loadstring(game:HttpGet("https://pastefy.app/wa3v2Vgm/raw"))()
           end
+          
+          Rayfield:Notify({
+             Title = "✅ Animation Loaded",
+             Content = "Animation started!",
+             Duration = 2,
+             Image = "play",
+          })
       end)
    end,
 })
 
-local Input = Tab2:CreateInput({
-   Name = "Change Avatar",
-   CurrentValue = "",
-   PlaceholderText = "Player id or name",
-   RemoveTextAfterFocusLost = false,
-   Flag = "Input1",
-   Callback = function(Text)
-      Text = Text:gsub("^%s*", ""):gsub("%s*$", "")
-      if Text == "" then return end
-
-      local targetUserId
-      local isUserId = tonumber(Text)
-
-      if isUserId then
-         targetUserId = isUserId
-      else
-         local success, result = pcall(function()
-            return Players:GetUserIdFromNameAsync(Text)
-         end)
-         if success and result then
-            targetUserId = result
-         else
-            return
-         end
-      end
-      
-      local character = localPlayer.Character
-      if not character or not character.PrimaryPart then
-         return
-      end
-
-      local currentCFrame = character.PrimaryPart.CFrame
-      
-      local success, err = pcall(function()
-          ReplicatedStorage.PlayerAppearanceEvent:FireServer(targetUserId)
-      end)
-      if not success then
-          return
-      end
-      
-      local newCharacter = localPlayer.CharacterAdded:Wait()
-      newCharacter:WaitForChild("HumanoidRootPart")
-      newCharacter.HumanoidRootPart.CFrame = currentCFrame
-   end
-})
-
-local ResetSkin = Tab2:CreateButton({
-   Name = "Reset Skin",
+local NeptuneButton = AnimationsTab:CreateButton({
+   Name = "🌊 Neptune Animation Hub",
    Callback = function()
-      local character = localPlayer.Character
-      if not character or not character.PrimaryPart then return end
-      local currentCFrame = character.PrimaryPart.CFrame
       pcall(function()
-         ReplicatedStorage.PlayerAppearanceEvent:FireServer(originalUserId)
+         loadstring(game:HttpGet("https://raw.githubusercontent.com/neptune-xyz/neptune-RH/main/hub.lua"))()
+         Rayfield:Notify({
+            Title = "🌊 Neptune Loaded",
+            Content = "Animation hub opened!",
+            Duration = 3,
+            Image = "waves",
+         })
       end)
-      local newCharacter = localPlayer.CharacterAdded:Wait()
-      newCharacter:WaitForChild("HumanoidRootPart")
-      newCharacter.HumanoidRootPart.CFrame = currentCFrame
    end,
 })
 
-local UnRagdol = Tab2:CreateToggle({
-   Name = "UnRagdol",
-   CurrentValue = false,
-   Flag = "Toggle1",
-   Callback = function(Value)
-      local character = localPlayer.Character
-      if not character then return end
-
-      if Value then
-         local ragdollInstance = character:FindFirstChild("Local Ragdoll")
-         if ragdollInstance then
-            if ragdollClone == nil then
-               ragdollClone = ragdollInstance:Clone()
-            end
-            ragdollInstance:Destroy()
-         end
-      else
-         if ragdollClone and not character:FindFirstChild("Local Ragdoll") then
-            local newRagdoll = ragdollClone:Clone()
-            newRagdoll.Parent = character
-         end
-      end
-   end,
-})
-
-local SkinDropdown = Tab2:CreateDropdown({
-   Name = "Saved Skins",
-   Options = {},
-   CurrentOption = {},
-   MultipleOptions = false,
-   Flag = "SkinDropdown",
-   Callback = function(Options)
-      local selectedSkinName = Options[1]
-      if selectedSkinName and savedSkins[selectedSkinName] then
-         local targetUserId = savedSkins[selectedSkinName]
-         local character = localPlayer.Character
-         if not character or not character.PrimaryPart then return end
-         local currentCFrame = character.PrimaryPart.CFrame
-         pcall(function()
-            ReplicatedStorage.PlayerAppearanceEvent:FireServer(targetUserId)
-         end)
-         local newCharacter = localPlayer.CharacterAdded:Wait()
-         newCharacter:WaitForChild("HumanoidRootPart")
-         newCharacter.HumanoidRootPart.CFrame = currentCFrame
-      end
-   end,
-})
-
-local NameLabel = Tab4:CreateLabel("None")
-
-local function setCharacterGhost(character, isGhost)
-    if not character then return end
-    for _, part in ipairs(character:GetDescendants()) do
-        if part:IsA("BasePart") or part:IsA("Decal") then
-            if isGhost then
-                if not originalProperties[part] then
-                    originalProperties[part] = {Transparency = part.Transparency, CanCollide = part.CanCollide}
-                end
-                part.Transparency = 1
-                if part:IsA("BasePart") then
-                    part.CanCollide = false
-                end
-            else
-                local props = originalProperties[part]
-                if props then
-                    part.Transparency = props.Transparency
-                    if part:IsA("BasePart") then
-                        part.CanCollide = props.CanCollide
-                    end
-                end
-            end
-        end
-    end
-    if not isGhost then
-        originalProperties = {}
-    end
-end
-
-local Goto = Tab4:CreateButton({
-   Name = "Goto",
+local SimpleSexButton = AnimationsTab:CreateButton({
+   Name = "💑 Simple Sex Animation",
    Callback = function()
-       if not selectedPlayer then return end
-       local localCharacter = localPlayer.Character
-       local targetCharacter = selectedPlayer.Character
-       if localCharacter and localCharacter:FindFirstChild("HumanoidRootPart") and targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart") then
-           localCharacter.HumanoidRootPart.CFrame = targetCharacter.HumanoidRootPart.CFrame
-       end
+      pcall(function()
+         loadstring(game:HttpGet("https://raw.githubusercontent.com/XNEOFF/FE-Trolling-GUI/main/FE%20SEX.lua"))()
+         Rayfield:Notify({
+            Title = "💑 Animation Loaded",
+            Content = "Sex animation loaded!",
+            Duration = 3,
+            Image = "heart",
+         })
+      end)
    end,
 })
 
-local SpectateToggle = Tab4:CreateToggle({
-   Name = "Spectate",
-   CurrentValue = false,
-   Flag = "SpectateToggle",
-   Callback = function(Value)
-       if Value then
-           if not selectedPlayer or not selectedPlayer.Character or not selectedPlayer.Character:FindFirstChild("Humanoid") then
-               return
-           end
-           
-           originalCameraSubject = workspace.CurrentCamera.CameraSubject
-           workspace.CurrentCamera.CameraSubject = selectedPlayer.Character.Humanoid
-           setCharacterGhost(localPlayer.Character, true)
-       else
-           if originalCameraSubject then
-               workspace.CurrentCamera.CameraSubject = originalCameraSubject
-           end
-           setCharacterGhost(localPlayer.Character, false)
-       end
-   end,
-})
+-- ============================================================
+-- 📦 UTILITIES TAB
+-- ============================================================
 
-local CopySkin = Tab4:CreateButton({
-   Name = "Copy Skin",
+local UtilitiesSection = UtilitiesTab:CreateSection("📦 Utilities")
+
+local DexButton = UtilitiesTab:CreateButton({
+   Name = "🔍 Dex Explorer",
    Callback = function()
-       if selectedPlayer then
-           local targetUserId = selectedPlayer.UserId
-           local targetName = selectedPlayer.Name
-           
-           savedSkins[targetName] = targetUserId
-           
-           local skinList = {}
-           for name, _ in pairs(savedSkins) do
-               table.insert(skinList, name)
-           end
-           
-           SkinDropdown:Refresh(skinList)
-           
-           local character = localPlayer.Character
-           if not character or not character.PrimaryPart then return end
-           local currentCFrame = character.PrimaryPart.CFrame
-           pcall(function()
-               ReplicatedStorage.PlayerAppearanceEvent:FireServer(targetUserId)
-           end)
-           local newCharacter = localPlayer.CharacterAdded:Wait()
-           newCharacter:WaitForChild("HumanoidRootPart")
-           newCharacter.HumanoidRootPart.CFrame = currentCFrame
-       end
+      pcall(function()
+         loadstring(game:HttpGet('https://raw.githubusercontent.com/MassiveHubs/loadstring/refs/heads/main/DexXenoAndRezware'))()
+         Rayfield:Notify({
+            Title = "✅ Success",
+            Content = "Dex Explorer loaded!",
+            Duration = 3,
+            Image = "check-circle",
+         })
+      end)
    end,
 })
+
+local InfiniteYieldButton = UtilitiesTab:CreateButton({
+   Name = "⚡ Infinite Yield",
+   Callback = function()
+      pcall(function()
+         loadstring(game:HttpGet('https://raw.githubusercontent.com/EdgeIY/infiniteyield/master/source'))()
+         Rayfield:Notify({
+            Title = "✅ Success",
+            Content = "Infinite Yield loaded!",
+            Duration = 3,
+            Image = "check-circle",
+         })
+      end)
+   end,
+})
+
+-- ============================================================
+-- 🖱️ MOUSE CLICK HANDLER
+-- ============================================================
 
 local localScript = localPlayer.PlayerScripts:FindFirstChild("LocalScript")
 if localScript then
@@ -396,8 +2020,59 @@ mouse.Button1Down:Connect(function()
 		local targetPlayer = Players:GetPlayerFromCharacter(characterModel)
 		
 		if targetPlayer and targetPlayer ~= localPlayer then
-			selectedPlayer = targetPlayer
-			NameLabel:Set(selectedPlayer.Name)
+			PlayerSelector:SelectPlayer(targetPlayer)
+			SelectedPlayerLabel:Set("Selected: " .. targetPlayer.Name, "user-check", Color3.fromRGB(100, 255, 100), false)
+			
+			Rayfield:Notify({
+			   Title = "✅ Player Selected",
+			   Content = "Selected: " .. targetPlayer.Name,
+			   Duration = 2,
+			   Image = "user-check",
+			})
 		end
 	end
+end)
+
+-- Обработка появления новых игроков
+Players.PlayerAdded:Connect(function(player)
+    wait(2)
+    if GroupManager.currentGroup then
+        GroupManager:UpdateBillboards()
+    end
+end)
+
+-- Обработка появления персонажа игрока
+local function onCharacterAdded(player)
+    wait(1)
+    if GroupManager.currentGroup then
+        GroupManager:UpdateBillboards()
+    end
+end
+
+for _, player in pairs(Players:GetPlayers()) do
+    if player.Character then
+        onCharacterAdded(player)
+    end
+    player.CharacterAdded:Connect(function()
+        onCharacterAdded(player)
+    end)
+end
+
+-- ============================================================
+-- 🎉 STARTUP
+-- ============================================================
+
+Rayfield:Notify({
+   Title = "🎮 NORTCH.GG Loaded!",
+   Content = "Welcome " .. localPlayer.DisplayName .. "! Press K to toggle UI",
+   Duration = 5,
+   Image = "check-circle",
+})
+
+-- Автосохранение каждые 5 минут
+spawn(function()
+    while wait(300) do
+        UserData:Save()
+        print("✅ Auto-saved")
+    end
 end)
